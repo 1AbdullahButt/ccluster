@@ -37,6 +37,15 @@ func TestHealth(t *testing.T) {
 			"status":   status,
 		}
 	}
+	// failedUpdate is a graph at generation 3 that last reconciled successfully at
+	// generation 2. A failed reconcile moves only the Ready condition's
+	// observedGeneration, here to readyObserved.
+	failedUpdate := func(readyObserved int64) map[string]any {
+		obj := dgd(3, 2, "failed", "failed_to_reconcile_the_resources", "checkpoint is not compatible")
+		ready := obj["status"].(map[string]any)["conditions"].([]any)[0].(map[string]any)
+		ready["observedGeneration"] = readyObserved
+		return obj
+	}
 
 	for _, tc := range []struct {
 		name        string
@@ -85,6 +94,27 @@ func TestHealth(t *testing.T) {
 				"DynamoGraphDeployment/llm": dgd(3, 2, "successful", "", ""),
 			}},
 			wantHealth: v1alpha1.ComponentHealthProgressing,
+		},
+		{
+			name:      "the current spec failed, which only the Ready condition records",
+			aggregate: "Healthy",
+			resources: catalogs.ObservedResources{graph},
+			reader: &deploymentstest.Reader{Objects: map[string]map[string]any{
+				"DynamoGraphDeployment/llm": failedUpdate(3),
+			}},
+			wantHealth:  v1alpha1.ComponentHealthDegraded,
+			wantReason:  "FailedToReconcileTheResources",
+			wantMessage: "DynamoGraphDeployment llm: checkpoint is not compatible",
+		},
+		{
+			name:      "an earlier spec failed and the operator has not seen the current one",
+			aggregate: "Healthy",
+			resources: catalogs.ObservedResources{graph},
+			reader: &deploymentstest.Reader{Objects: map[string]map[string]any{
+				"DynamoGraphDeployment/llm": failedUpdate(2),
+			}},
+			wantHealth:  v1alpha1.ComponentHealthProgressing,
+			wantMessage: "DynamoGraphDeployment llm: waiting for the Dynamo operator to see the current spec",
 		},
 		{
 			name:      "a crashing worker is worse than a pending graph",
