@@ -13,6 +13,8 @@ from click.testing import CliRunner
 from kubernetes.client import ApiException
 from kubernetes.config import ConfigException
 from kubernetes.dynamic.exceptions import ResourceNotFoundError
+from urllib3 import HTTPSConnectionPool
+from urllib3.exceptions import MaxRetryError, SSLError
 
 from ccluster import cli
 from ccluster.cli import main
@@ -207,6 +209,35 @@ def test_init_rejects_unknown_context(kubeconfig, config_file):
     result = invoke("init", "-cp", "nope")
     assert result.exit_code == 1
     assert "Kubeconfig could not be loaded" in result.output
+    assert not config_file.exists()
+
+
+def test_init_reports_unreachable_api_server(kubeconfig, config_file, monkeypatch):
+    def unreachable(self, api_version, kind):
+        pool = HTTPSConnectionPool("127.0.0.1", port=6443)
+        raise MaxRetryError(pool, "/version")
+
+    monkeypatch.setattr(FakeDynamicClient, "_get", unreachable)
+    result = invoke("init", "-cp", "cp")
+    assert result.exit_code == 1
+    assert result.output.splitlines() == [
+        "Error: Kubernetes API request failed at https://127.0.0.1:6443"
+    ]
+    assert not config_file.exists()
+
+
+def test_init_reports_tls_error_reason(kubeconfig, config_file, monkeypatch):
+    def invalid_certificate(self, api_version, kind):
+        pool = HTTPSConnectionPool("[2001:db8::1]", port=6443)
+        raise MaxRetryError(pool, "/version", SSLError("certificate verify failed\nhostname mismatch"))
+
+    monkeypatch.setattr(FakeDynamicClient, "_get", invalid_certificate)
+    result = invoke("init", "-cp", "cp")
+    assert result.exit_code == 1
+    assert result.output.splitlines() == [
+        "Error: Kubernetes API request failed at https://[2001:db8::1]:6443: "
+        "certificate verify failed hostname mismatch"
+    ]
     assert not config_file.exists()
 
 
